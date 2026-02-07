@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile } from '../types';
-import { PulseService } from '../services/pulseService';
-import { useToast } from './ToastContext';
-import { supabase } from '../lib/supabase';
+import { UserProfile } from '../../types';
+import { PulseService } from '../../services/pulseService';
+import { useToast } from '../../context/ToastContext';
+import { supabase } from '../../lib/supabase';
 
 interface AuthContextType {
     currentUser: UserProfile | null;
@@ -218,7 +218,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             changePassword,
             loading
         }}>
-            {children}
+            {loading ? (
+                <div className="min-h-screen flex items-center justify-center bg-gray-50">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                </div>
+            ) : children}
         </AuthContext.Provider>
     );
 };
