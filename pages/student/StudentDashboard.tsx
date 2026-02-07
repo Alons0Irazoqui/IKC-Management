@@ -15,9 +15,15 @@ const StudentDashboard: React.FC = () => {
     const navigate = useNavigate();
 
     // FORCE SYNC ON MOUNT
+    // FORCE SYNC ON MOUNT
     React.useEffect(() => {
-        refreshData();
-    }, [refreshData]);
+        // Prevent infinite loop: Only refresh if we don't have basic data yet
+        // or if it's been a while (optional logic, but here we just check presence)
+        if (students.length === 0 && currentUser) {
+            console.log("Dashboard: Fetching fresh data...");
+            refreshData();
+        }
+    }, [refreshData, students.length, currentUser]);
 
     // LIVE DATA: Force lookup from the fresh students list to get real-time balance/status updates
     // from FinanceContext > AcademyContext > Here.

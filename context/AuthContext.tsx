@@ -101,42 +101,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const fetchUserProfile = async (userId: string, sessionUser?: any) => {
         try {
             // Force a timeout on the profile fetch to prevent hanging
-            // CRITICAL FIX: Use limit(1) instead of single() to avoid 406 errors if multiple rows exist
             const fetchPromise = supabase
                 .from('profiles')
                 .select('*')
                 .eq('id', userId)
-                .limit(1);
+                .maybeSingle(); // Use maybeSingle to handle 0 or 1 row
 
             const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Profile fetch timed out")), 5000)
             );
 
-            const { data, error } = await Promise.race([fetchPromise, timeoutPromise]) as any;
+            const { data: d, error } = await Promise.race([fetchPromise, timeoutPromise]) as any;
 
             if (error) {
-                console.warn("Profile fetch warning:", error.message);
+                console.error("Profile fetch error:", error.message);
+                throw error;
             }
 
-            // Handle validation: data is now an array due to removing .single()
-            const profileData = Array.isArray(data) ? data[0] : data;
-
-            if (profileData) {
-                const d = profileData;
-                setCurrentUser({
-                    id: d.id,
-                    email: d.email || '',
-                    name: d.name || 'Usuario',
-                    role: d.role as 'master' | 'student',
-                    academyId: d.academy_id || '',
-                    studentId: d.student_id || undefined,
-                    avatarUrl: d.avatar_url || '',
-                    emailConfirmed: !!sessionUser?.email_confirmed_at
-                });
+            if (!d) {
+                console.warn("User exists in Auth but has no Profile. Logging out.");
+                await logout();
+                addToast('Error: Perfil no encontrado. Contacta a soporte.', 'error');
+                return;
             }
+
+            // Correct Mapping: snake_case (DB) -> camelCase (App)
+            // Ensure all fields are mapped correctly from the 'profiles' table columns.
+            const mappedProfile: UserProfile = {
+                id: d.id,
+                email: d.email || sessionUser?.email || '',
+                name: d.name || 'Usuario',
+                role: d.role as 'master' | 'student',
+                academyId: d.academy_id || '',      // Critical map
+                studentId: d.student_id || undefined, // Critical map
+                avatarUrl: d.avatar_url || '',      // Critical map
+                emailConfirmed: !!sessionUser?.email_confirmed_at
+            };
+
+            setCurrentUser(mappedProfile);
         } catch (err) {
-            // Log as warning to reduce console noise unless critical
-            console.warn('Profile fetch check completed with info:', err);
+            console.error('Critical Auth Error:', err);
+            // Don't auto-logout here to allow retries on network error, 
+            // but stop the loading state to prevent white screen of death.
+            addToast('Error al cargar perfil. Revisa tu conexión.', 'error');
         } finally {
             setLoading(false);
         }

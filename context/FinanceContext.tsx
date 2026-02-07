@@ -92,11 +92,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         try {
             let dbRecords: TuitionRecord[] = [];
 
-            if (currentUser.role === 'student' && currentUser.studentId) {
-                // Students only fetch their own records to avoid RLS issues
-                dbRecords = await PulseService.getStudentPayments(currentUser.studentId);
-            } else if (currentUser.academyId) {
-                // Masters fetch all academy records
+            if (currentUser.academyId) {
+                // Fetch payments based on role logic internal to getPayments
                 dbRecords = await PulseService.getPayments(currentUser.academyId);
             }
 
@@ -112,6 +109,20 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     useEffect(() => {
         loadFinanceData();
     }, [loadFinanceData]);
+
+    // --- REAL-TIME SUBSCRIPTION ---
+    useEffect(() => {
+        if (!currentUser?.academyId) return;
+
+        const unsubscribe = PulseService.subscribeToPayments(currentUser.academyId, () => {
+            console.log("Real-time payment update: refreshing finance data...");
+            loadFinanceData();
+        });
+
+        return () => {
+            unsubscribe();
+        };
+    }, [currentUser?.academyId, loadFinanceData]);
 
     // --- CORE LOGIC: BILLING GENERATION (AUTOMATED & MANUAL) ---
     const runBillingProcess = useCallback(() => {

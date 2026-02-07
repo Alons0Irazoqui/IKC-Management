@@ -209,10 +209,45 @@ export const PulseService = {
     },
 
     getPayments: async (academyId: string): Promise<TuitionRecord[]> => {
-        const { data, error } = await supabase
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return [];
+
+        // 1. Check Role
+        const { data: profileData } = await supabase
+            .from('profiles')
+            .select('role, student_id')
+            .eq('id', user.id)
+            .single();
+
+        const profile = profileData as any;
+
+        let query = supabase
             .from('tuition_records')
             .select('*')
             .eq('academy_id', academyId);
+
+        // 2. Filter if Student
+        if (profile?.role === 'student') {
+            // Use the linked student_id if available, otherwise fallback to auth user id if they match
+            // But usually students table has user_id = auth.uid.
+            // tuition_records has student_id (UUID of students table).
+            // So we need the ID from the students table.
+
+            // If profile.student_id is set (it should be for students), use it.
+            if (profile.student_id) {
+                query = query.eq('student_id', profile.student_id);
+            } else {
+                // Fallback: Try to find student record by user_id
+                const { data: student } = await supabase.from('students').select('id').eq('user_id', user.id).maybeSingle();
+                if (student) {
+                    query = query.eq('student_id', (student as any).id);
+                } else {
+                    return []; // No student user found
+                }
+            }
+        }
+
+        const { data, error } = await query;
 
         if (error) throw error;
 
@@ -233,8 +268,24 @@ export const PulseService = {
             type: 'charge',
             canBePaidInParts: p.can_be_paid_in_parts,
             category: p.category,
-            description: p.description
+            description: p.description,
+            paymentHistory: p.payment_history || [], // Ensure this field is mapped if it exists in DB schema (JSONB)
+            details: p.details || [] // Map details JSONB
         }));
+    },
+
+    subscribeToPayments: (academyId: string, onUpdate: () => void) => {
+        const subscription = supabase
+            .channel('public:tuition_records')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'tuition_records', filter: `academy_id=eq.${academyId}` }, (payload) => {
+                console.log('Payment update received!', payload);
+                onUpdate();
+            })
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(subscription);
+        };
     },
 
     getStudentPayments: async (studentId: string): Promise<TuitionRecord[]> => {
