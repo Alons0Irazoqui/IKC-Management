@@ -104,8 +104,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const fetchPromise = supabase
                 .from('profiles')
                 .select('*')
-                .eq('id', userId)
-                .maybeSingle(); // Use maybeSingle to handle 0 or 1 row
+                .eq('id', userId) // Changed from email to ID for security and RLS compliance
+                .maybeSingle();
 
             const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Profile fetch timed out")), 5000)
@@ -119,32 +119,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
 
             if (!d) {
-                console.warn("User exists in Auth but has no Profile. Logging out.");
-                await logout();
-                addToast('Error: Perfil no encontrado. Contacta a soporte.', 'error');
+                console.warn("User exists in Auth but has no Profile. This might be a new user or sync issue.");
+                // Do NOT logout automatically to avoid infinite login/logout loops if DB is lagging.
+                // Just set user as null (or partial) and let UI handle "Complete your profile" state if needed.
+                // For now, we'll just stop loading.
                 return;
             }
 
             // Correct Mapping: snake_case (DB) -> camelCase (App)
-            // Ensure all fields are mapped correctly from the 'profiles' table columns.
             const mappedProfile: UserProfile = {
                 id: d.id,
                 email: d.email || sessionUser?.email || '',
                 name: d.name || 'Usuario',
                 role: d.role as 'master' | 'student',
-                academyId: d.academy_id || '',      // Critical map
-                studentId: d.student_id || undefined, // Critical map
-                avatarUrl: d.avatar_url || '',      // Critical map
+                academyId: d.academy_id || '',
+                studentId: d.student_id || undefined,
+                avatarUrl: d.avatar_url || '',
                 emailConfirmed: !!sessionUser?.email_confirmed_at
             };
 
             setCurrentUser(mappedProfile);
         } catch (err) {
             console.error('Critical Auth Error:', err);
-            // Don't auto-logout here to allow retries on network error, 
-            // but stop the loading state to prevent white screen of death.
             addToast('Error al cargar perfil. Revisa tu conexión.', 'error');
         } finally {
+            // CRITICAL: Always stop loading to prevent white screen
             setLoading(false);
         }
     };

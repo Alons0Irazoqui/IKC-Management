@@ -212,38 +212,56 @@ export const PulseService = {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return [];
 
-        // 1. Check Role
-        const { data: profileData } = await supabase
+        // 1. Check Role & Student ID
+        // Optimize: Fetch both role and possible linked student_id
+        const { data: profileData, error: profileError } = await supabase
             .from('profiles')
             .select('role, student_id')
             .eq('id', user.id)
-            .single();
+            .maybeSingle(); // Safer than single()
+
+        // If no profile, we can't determine role, so we return empty to be safe (or throw)
+        if (profileError || !profileData) {
+            console.warn("Could not load profile for payments check");
+            return [];
+        }
 
         const profile = profileData as any;
-
         let query = supabase
             .from('tuition_records')
             .select('*')
             .eq('academy_id', academyId);
 
         // 2. Filter if Student
-        if (profile?.role === 'student') {
-            // Use the linked student_id if available, otherwise fallback to auth user id if they match
-            // But usually students table has user_id = auth.uid.
-            // tuition_records has student_id (UUID of students table).
-            // So we need the ID from the students table.
+        if (profile.role === 'student') {
+            let studentIdsToFilter: string[] = [];
 
-            // If profile.student_id is set (it should be for students), use it.
+            // A. Check if profile has direct link
             if (profile.student_id) {
-                query = query.eq('student_id', profile.student_id);
+                studentIdsToFilter.push(profile.student_id);
+            }
+
+            // B. Fallback: Search in students table where user_id matches auth.uid
+            // Even if we found one above, checking here covers cases where profile link might be broken but user_id is set.
+            // Ideally they match.
+            const { data: studentRecords } = await supabase
+                .from('students')
+                .select('id')
+                .eq('user_id', user.id);
+
+            if (studentRecords && studentRecords.length > 0) {
+                const foundIds = studentRecords.map((s: any) => s.id);
+                // Merge unique IDs
+                studentIdsToFilter = [...new Set([...studentIdsToFilter, ...foundIds])];
+            }
+
+            if (studentIdsToFilter.length > 0) {
+                // Apply filter. If they have multiple student records (rare), show all.
+                query = query.in('student_id', studentIdsToFilter);
             } else {
-                // Fallback: Try to find student record by user_id
-                const { data: student } = await supabase.from('students').select('id').eq('user_id', user.id).maybeSingle();
-                if (student) {
-                    query = query.eq('student_id', (student as any).id);
-                } else {
-                    return []; // No student user found
-                }
+                // User is a student role but has no student record found?
+                // Return empty to be safe.
+                return [];
             }
         }
 
@@ -251,6 +269,7 @@ export const PulseService = {
 
         if (error) throw error;
 
+        // 3. Transformation
         return (data || []).map((p: any) => ({
             id: p.id,
             academyId: p.academy_id,
@@ -260,17 +279,25 @@ export const PulseService = {
             amount: p.amount,
             originalAmount: p.original_amount,
             penaltyAmount: p.penalty_amount,
+
+            // Handle Dates
             dueDate: p.due_date,
-            paymentDate: p.payment_date,
+            paymentDate: p.payment_date || null, // Ensure explicit null if missing
+
             status: p.status,
             method: p.method,
-            proofUrl: p.proof_url,
-            type: 'charge',
-            canBePaidInParts: p.can_be_paid_in_parts,
+
+            // Handle URL
+            proofUrl: p.proof_url || null,
+
+            type: 'charge', // Static or mapped if DB has it
+            canBePaidInParts: p.can_be_paid_in_parts || false,
             category: p.category,
             description: p.description,
-            paymentHistory: p.payment_history || [], // Ensure this field is mapped if it exists in DB schema (JSONB)
-            details: p.details || [] // Map details JSONB
+
+            // Extended fields
+            paymentHistory: p.payment_history || [],
+            details: p.details || []
         }));
     },
 

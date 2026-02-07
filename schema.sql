@@ -212,9 +212,20 @@ using (academy_id = get_my_academy_id());
 -- "Users can only access data belonging to their academy"
 
 -- STUDENTS
-create policy "Academy isolation for students"
+-- Policy: Students can view their own record (matches auth.uid to user_id column)
+create policy "Students can view own data"
+on public.students for select
+using (auth.uid() = user_id);
+
+-- Policy: Masters can view/edit all students in their academy
+create policy "Masters view academy students"
 on public.students for all
-using (academy_id = get_my_academy_id());
+using (
+  academy_id IN (
+    select academy_id from public.profiles 
+    where id = auth.uid() and role = 'master'
+  )
+);
 
 -- CLASSES
 create policy "Academy isolation for classes"
@@ -242,9 +253,25 @@ on public.library for all
 using (academy_id = get_my_academy_id());
 
 -- PAYMENTS
-create policy "Academy isolation for payments"
+-- Master: Ver todos los pagos de su academia
+create policy "Masters view academy payments"
 on public.tuition_records for all
-using (academy_id = get_my_academy_id());
+using (
+  academy_id IN (
+    select academy_id from public.profiles 
+    where id = auth.uid() and role = 'master'
+  )
+);
+
+-- Estudiante: Ver SOLO sus propios pagos
+create policy "Students view own payments"
+on public.tuition_records for select
+using (
+  student_id IN (
+    select id from public.students 
+    where user_id = auth.uid()
+  )
+);
 
 -- --- TRIGGERS ---
 
