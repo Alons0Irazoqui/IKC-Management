@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserProfile } from '../types';
 import { PulseService } from '../services/pulseService';
 import { useToast } from './ToastContext';
+import { supabase } from '../lib/supabase';
 
 interface AuthContextType {
     currentUser: UserProfile | null;
@@ -15,8 +16,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-import { supabase } from '../lib/supabase'; // ADJUSTED IMPORT
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
@@ -25,146 +24,126 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     useEffect(() => {
         let isMounted = true;
 
-        // OPTIMIZATION: Check if we have a token in storage. If not, don't wait.
-        // Supabase keys usually look like 'sb-<project-id>-auth-token'
+        // 0. Quick check for token to avoid unnecessary wait state
         const hasToken = Object.keys(localStorage).some(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
-
         if (!hasToken) {
             setLoading(false);
         }
 
-        // Safety timeout to prevent infinite loading (e.g. if Supabase is unreachable)
-        const timeoutId = setTimeout(() => {
-            if (isMounted && loading) {
-                console.warn("Auth check timed out - forcing application load");
-                setLoading(false);
-            }
-        }, hasToken ? 6000 : 500); // Slight buffer over the fetch timeout
-
-        // 1. Check active session
+        // 1. Initial Session Check
         supabase.auth.getSession().then(({ data: { session }, error }) => {
             if (!isMounted) return;
 
             if (error) {
-                // Handle specific "Invalid Refresh Token" error
-                if (error.message.includes("Invalid Refresh Token") || error.message.includes("Refresh Token Not Found")) {
-                    console.warn("Session expired. Clearing data.");
-                    supabase.auth.signOut();
+                console.error("Auth session error:", error);
+
+                // Only clear if it's a critical refresh error
+                if (error.message.includes("Invalid Refresh Token")) {
                     localStorage.removeItem('sb-dpcbpifhcsujlzludnfg-auth-token');
                 }
+
                 setLoading(false);
-                clearTimeout(timeoutId);
                 return;
             }
 
             if (session?.user) {
-                fetchUserProfile(session.user.id, session.user).finally(() => {
-                    if (isMounted) clearTimeout(timeoutId);
-                });
+                fetchUserProfile(session.user.id, session.user);
             } else {
                 setLoading(false);
-                clearTimeout(timeoutId);
-            }
-        }).catch(err => {
-            console.error("Auth check failed:", err);
-            if (isMounted) {
-                setLoading(false);
-                clearTimeout(timeoutId);
             }
         });
 
-        // 2. Listen for auth changes
+        // 2. Auth State Listener
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
             if (!isMounted) return;
 
             if (event === 'SIGNED_OUT') {
                 setCurrentUser(null);
                 setLoading(false);
-                return;
-            }
-
-            if (session?.user) {
-                await fetchUserProfile(session.user.id, session.user);
+            } else if (session?.user) {
+                // Determine if we need to fetch profile (e.g. on SIGNED_IN or TOKEN_REFRESHED)
+                if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
+                    await fetchUserProfile(session.user.id, session.user);
+                }
             } else {
-                setCurrentUser(null);
+                if (currentUser) setCurrentUser(null);
                 setLoading(false);
             }
         });
 
         return () => {
             isMounted = false;
-            clearTimeout(timeoutId);
             subscription.unsubscribe();
         };
     }, []);
 
     const fetchUserProfile = async (userId: string, sessionUser?: any) => {
         try {
-            // Force a timeout on the profile fetch to prevent hanging
-            const fetchPromise = supabase
+            // OPTIMIZATION: Use maybeSingle() to handle 0 or 1 row gracefully without throwing
+            const { data: d, error } = await supabase
                 .from('profiles')
                 .select('*')
-                .eq('id', userId) // Changed from email to ID for security and RLS compliance
+                .eq('id', userId)
                 .maybeSingle();
 
-            const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("Profile fetch timed out")), 5000)
-            );
-
-            const { data: d, error } = await Promise.race([fetchPromise, timeoutPromise]) as any;
-
             if (error) {
-                console.error("Profile fetch error:", error.message);
-                throw error;
+                console.error("Profile fetch error (non-fatal):", error.message);
+                // We do NOT throw here, allowing fallback logic to run
             }
 
-            if (!d) {
-                console.warn("User exists in Auth but has no Profile. This might be a new user or sync issue.");
-                // Do NOT logout automatically to avoid infinite login/logout loops if DB is lagging.
-                // Just set user as null (or partial) and let UI handle "Complete your profile" state if needed.
-                // For now, we'll just stop loading.
-                return;
-            }
+            // ROBUST MAPPING: Handles null/undefined database values safely
+            // If 'd' is null (profile missing), we create a functional temporary profile
+            // from the auth session data.
+            const userMetadata = sessionUser?.user_metadata || {};
 
-            // Correct Mapping: snake_case (DB) -> camelCase (App)
             const mappedProfile: UserProfile = {
-                id: d.id,
-                email: d.email || sessionUser?.email || '',
-                name: d.name || 'Usuario',
-                role: d.role as 'master' | 'student',
-                academyId: d.academy_id || '',
-                studentId: d.student_id || undefined,
-                avatarUrl: d.avatar_url || '',
+                id: userId,
+                // Fallback to session email if DB email is missing
+                email: d?.email || sessionUser?.email || '',
+                // Fallback to metadata name or default
+                name: d?.name || userMetadata.name || 'Usuario',
+                // Fallback to role in metadata or default to 'student'
+                role: (d?.role as 'master' | 'student') || (userMetadata.role as 'master' | 'student') || 'student',
+                // Handle null academy_id gracefully
+                academyId: d?.academy_id || '',
+                studentId: d?.student_id || undefined,
+                avatarUrl: d?.avatar_url || '',
                 emailConfirmed: !!sessionUser?.email_confirmed_at
             };
 
             setCurrentUser(mappedProfile);
         } catch (err) {
-            console.error('Critical Auth Error:', err);
-            addToast('Error al cargar perfil. Revisa tu conexión.', 'error');
+            console.error('Critical Auth Error (Unexpected):', err);
+            // Even in a generic crash, try not to leave the user stranded if we have session data
+            if (sessionUser) {
+                setCurrentUser({
+                    id: userId,
+                    email: sessionUser.email || '',
+                    name: 'Usuario (Offline)',
+                    role: 'student',
+                    academyId: '',
+                    avatarUrl: '',
+                    emailConfirmed: false
+                });
+            }
         } finally {
-            // CRITICAL: Always stop loading to prevent white screen
             setLoading(false);
         }
     };
 
     const login = async (email: string, pass: string) => {
         try {
-            // Race between actual login and a timeout
-            const { error } = await Promise.race([
-                supabase.auth.signInWithPassword({
-                    email,
-                    password: pass
-                }),
-                new Promise<{ error: any }>((_, reject) =>
-                    setTimeout(() => reject(new Error("Tiempo de espera agotado. Verifica tu conexión.")), 10000)
-                )
-            ]);
+            // Remove manual timeout race - let Supabase/Network handle it
+            const { error } = await supabase.auth.signInWithPassword({
+                email,
+                password: pass
+            });
 
             if (error) throw error;
             addToast('Sesión iniciada', 'success');
             return true;
         } catch (error) {
+            console.error("Login error:", error);
             addToast(error instanceof Error ? error.message : "Error al iniciar sesión", 'error');
             return false;
         }
@@ -194,23 +173,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             throw new Error(passError);
         }
 
-        // Allow PulseService to throw errors (e.g. 429) so UI can handle them
-        // Add timeout wrapper
-        await Promise.race([
-            PulseService.registerMaster(data),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("Tiempo de espera agotado al registrar academia.")), 15000)
-            )
-        ]);
-
-        addToast('Academia registrada. Por favor revisa tu correo.', 'success');
-        return true;
+        // Just await the service call directly
+        try {
+            await PulseService.registerMaster(data);
+            addToast('Academia registrada. Por favor revisa tu correo.', 'success');
+            return true;
+        } catch (error) {
+            console.error("Registration error:", error);
+            throw error;
+        }
     };
 
     const registerStudentAction = async (data: any) => {
-        // Students might be registered without password initially or via master, logic depends on form.
-        // Assuming data has password if it's a self-signup, but PulseService.registerStudent currently just inserts data.
-        // If we added Auth to student registration, we'd check password here too.
         try {
             await PulseService.registerStudent(data);
             addToast('Cuenta de alumno creada', 'success');
@@ -237,6 +211,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setCurrentUser({ ...currentUser, ...updates });
             addToast('Perfil actualizado', 'success');
         } catch (err) {
+            console.error("Update profile error:", err);
             addToast('Error al actualizar perfil', 'error');
         }
     };
@@ -252,6 +227,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (error) throw error;
             addToast('Contraseña actualizada', 'success');
         } catch (err) {
+            console.error("Change password error:", err);
             addToast('Error al cambiar contraseña', 'error');
         }
     };
