@@ -27,7 +27,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         const initializeAuth = async () => {
             try {
-                // 1. Verificar sesión inicial con Supabase (wait for it)
+                // 1. Verificar sesión inicial
                 const { data: { session }, error } = await supabase.auth.getSession();
 
                 if (error) {
@@ -35,13 +35,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 }
 
                 if (session?.user) {
-                    // 2. Si hay sesión, ESPERAR a cargar el perfil ANTES de quitar loading
+                    // 2. Si hay sesión, cargar perfil con seguridad
                     await fetchUserProfile(session.user.id, session.user);
                 }
             } catch (error) {
                 console.error("Auth initialization unexpected error:", error);
             } finally {
-                // 3. Solo quitar loading cuando todo haya terminado
                 if (isMounted) {
                     setLoading(false);
                 }
@@ -71,37 +70,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const fetchUserProfile = async (userId: string, sessionUser: any) => {
         try {
+            // GOLDEN RULE #1: Use maybeSingle() to avoid "multiple (or no) rows returned" error
             const { data: dbData, error } = await supabase
                 .from('profiles')
                 .select('*')
                 .eq('id', userId)
                 .maybeSingle();
 
+            // GOLDEN RULE #2: Handle error gracefully (do NOT throw)
             if (error) {
-                console.warn("Error fetching profile, using fallback:", error.message);
+                console.warn("Error fetching profile from DB (using fallback):", error.message);
             }
 
+            // GOLDEN RULE #3: Construct Temporal Profile from Session Metadata if DB fails
             const meta = sessionUser.user_metadata || {};
-            const d = dbData as any;
+            const d = dbData as any; // Safe cast to access properties even if null
 
             const profile: UserProfile = {
                 id: userId,
+                // Email: Prioritize DB -> Session -> Default
                 email: d?.email || sessionUser.email || '',
+                // Name: Prioritize DB -> Metadata -> Default
                 name: d?.name || meta.name || 'Usuario',
+                // Role: Prioritize DB -> Metadata -> Default 'student'
                 role: (d?.role as 'master' | 'student') || (meta.role as 'master' | 'student') || 'student',
+                // Academy ID
                 academyId: d?.academy_id || meta.academy_id || '',
+
+                // Optional fields
                 studentId: d?.student_id || undefined,
                 avatarUrl: d?.avatar_url || '',
                 emailConfirmed: !!sessionUser.email_confirmed_at
             };
 
             setCurrentUser(profile);
+
         } catch (err) {
-            console.error("Critical Profile Error:", err);
+            console.error("Critical Profile Construction Error:", err);
+            // Ultra-safe fallback to prevent locking out the user
             setCurrentUser({
                 id: userId,
                 email: sessionUser.email || '',
-                name: 'Usuario (Recovery)',
+                name: 'Usuario (System Recovery)',
                 role: 'student',
                 academyId: '',
                 avatarUrl: '',
@@ -218,11 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             changePassword,
             loading
         }}>
-            {loading ? (
-                <div className="min-h-screen flex items-center justify-center bg-gray-50">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-                </div>
-            ) : children}
+            {children}
         </AuthContext.Provider>
     );
 };

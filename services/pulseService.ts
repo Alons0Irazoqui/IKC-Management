@@ -13,7 +13,8 @@ export const PulseService = {
     registerMaster: async (data: { name: string; email: string; password: string; academyName: string }) => {
         // 1. Sign Up User (Auto-creates Academy via DB Trigger if role=master & academy_name provided)
         // Ensure redirect URL matches your production or local setup
-        const redirectUrl = window.location.origin + '/#/email-confirmed';
+        // Use origin to avoid double hash issues (#/page#token) which can break parsing or delivery
+        const redirectUrl = window.location.origin;
 
         const { data: authData, error } = await supabase.auth.signUp({
             email: data.email,
@@ -31,6 +32,7 @@ export const PulseService = {
         if (error) {
             console.error("Supabase SignUp Error:", error);
             if (error.status === 429) {
+                // If Rate Limit hit, we throw specific error for UI
                 throw new Error("RATE_LIMIT_EXCEEDED");
             }
             throw error;
@@ -42,7 +44,7 @@ export const PulseService = {
     },
 
     resendVerificationEmail: async (email: string) => {
-        const redirectUrl = window.location.origin + '/#/email-confirmed';
+        const redirectUrl = window.location.origin;
         const { error } = await supabase.auth.resend({
             type: 'signup',
             email: email,
@@ -66,7 +68,7 @@ export const PulseService = {
         }
 
         // 2. Create Auth User to trigger Email Confirmation
-        const redirectUrl = window.location.origin + '/#/email-confirmed';
+        const redirectUrl = window.location.origin;
         const { data: authData, error: authError } = await supabase.auth.signUp({
             email: data.email,
             password: data.password,
@@ -137,12 +139,17 @@ export const PulseService = {
     // --- DATA ACCESS ---
 
     getStudents: async (academyId: string): Promise<Student[]> => {
+        if (!academyId) return []; // Validation Rule #3
+
         const { data, error } = await supabase
             .from('students')
             .select('*')
             .eq('academy_id', academyId);
 
-        if (error) throw error;
+        if (error) {
+            console.warn("Error getting students:", error); // Rule #2: Handle error gracefully
+            return [];
+        }
 
         // Map DB to Frontend Type
         return (data || []).map((s: any) => ({
@@ -163,12 +170,18 @@ export const PulseService = {
     },
 
     getClasses: async (academyId: string): Promise<ClassCategory[]> => {
+        if (!academyId) return []; // Validation Rule #3
+
         const { data, error } = await supabase
             .from('classes')
             .select('*')
             .eq('academy_id', academyId);
 
-        if (error) throw error;
+        if (error) {
+            console.warn("Error getting classes:", error);
+            return [];
+        }
+
         return (data || []).map((c: any) => ({
             id: c.id,
             academyId: c.academy_id,
@@ -185,8 +198,14 @@ export const PulseService = {
     },
 
     getEvents: async (academyId: string): Promise<Event[]> => {
+        if (!academyId) return []; // Validation Rule #3
+
         const { data, error } = await supabase.from('events').select('*').eq('academy_id', academyId);
-        if (error) throw error;
+
+        if (error) {
+            console.warn("Error getting events:", error);
+            return [];
+        }
 
         return (data || []).map((e: any) => ({
             id: e.id,
@@ -209,6 +228,8 @@ export const PulseService = {
     },
 
     getPayments: async (academyId: string): Promise<TuitionRecord[]> => {
+        if (!academyId) return []; // Validation Rule #3
+
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return [];
 
@@ -267,7 +288,10 @@ export const PulseService = {
 
         const { data, error } = await query;
 
-        if (error) throw error;
+        if (error) {
+            console.warn("Error getting payments:", error);
+            return [];
+        }
 
         // 3. Transformation
         return (data || []).map((p: any) => ({
@@ -302,6 +326,8 @@ export const PulseService = {
     },
 
     subscribeToPayments: (academyId: string, onUpdate: () => void) => {
+        if (!academyId) return () => { }; // Validation
+
         const subscription = supabase
             .channel('public:tuition_records')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'tuition_records', filter: `academy_id=eq.${academyId}` }, (payload) => {
@@ -316,12 +342,17 @@ export const PulseService = {
     },
 
     getStudentPayments: async (studentId: string): Promise<TuitionRecord[]> => {
+        if (!studentId) return [];
+
         const { data, error } = await supabase
             .from('tuition_records')
             .select('*')
             .eq('student_id', studentId);
 
-        if (error) throw error;
+        if (error) {
+            console.warn("Error getting student payments:", error);
+            return [];
+        }
 
         return (data || []).map((p: any) => ({
             id: p.id,
@@ -378,6 +409,7 @@ export const PulseService = {
     },
 
     deletePayment: async (recordId: string) => {
+        if (!recordId) return;
         const { error } = await supabase.from('tuition_records').delete().eq('id', recordId);
         if (error) throw error;
     },
@@ -412,9 +444,18 @@ export const PulseService = {
     // --- ACADEMY SETTINGS ---
 
     getAcademySettings: async (academyId: string): Promise<AcademySettings> => {
-        const { data, error } = await supabase.from('academies').select('*').eq('id', academyId).single();
-        if (error) throw error;
-        if (!data) throw new Error("Academy settings not found");
+        if (!academyId) return null as any; // Validation Rule #3
+
+        // Rule #1: Use maybeSingle()
+        const { data, error } = await supabase.from('academies').select('*').eq('id', academyId).maybeSingle();
+
+        if (error) {
+            console.warn("Academy settings error:", error); // Rule #2
+            return null as any;
+        }
+
+        if (!data) return null as any; // Rule #2
+
         const d = data as any;
         return {
             id: d.id,
@@ -436,6 +477,8 @@ export const PulseService = {
     },
 
     seedDefaultRanks: async (academyId: string) => {
+        if (!academyId) return [];
+
         const defaultRanks = [
             { id: crypto.randomUUID(), name: 'Cinturón Blanco', color: 'white', order: 1, requiredAttendance: 0 },
             { id: crypto.randomUUID(), name: 'Cinturón de Color', color: 'yellow', order: 2, requiredAttendance: 24 },
@@ -443,13 +486,17 @@ export const PulseService = {
         ];
 
         // Fetch current settings first to preserve other fields
+        // Use maybeSingle()
         const { data: currentSettings, error: fetchError } = await supabase
             .from('academies')
             .select('*')
             .eq('id', academyId)
-            .single();
+            .maybeSingle();
 
-        if (fetchError) throw fetchError;
+        if (fetchError) {
+            console.warn("Error seeding ranks (fetch):", fetchError);
+            return [];
+        }
 
         const { error } = await (supabase.from('academies') as any).update({
             ranks: defaultRanks
@@ -513,9 +560,10 @@ export const PulseService = {
             end_time: cls.endTime,
             instructor: cls.instructor,
             student_ids: cls.studentIds
-        } as any).select().single();
+        } as any).select().maybeSingle(); // Rule #1
+
         if (error) throw error;
-        return data;
+        return data || null; // Return null if no data
     },
 
     updateClass: async (cls: ClassCategory) => {
@@ -546,9 +594,10 @@ export const PulseService = {
             color: evt.color,
             type: evt.type,
             registrants: evt.registrants
-        } as any).select().single();
+        } as any).select().maybeSingle(); // Rule #1
+
         if (error) throw error;
-        return data;
+        return data || null;
     },
 
     updateEvent: async (evt: Event) => {
@@ -573,8 +622,13 @@ export const PulseService = {
     // --- LIBRARY ---
 
     getLibrary: async (academyId: string): Promise<LibraryResource[]> => {
+        if (!academyId) return []; // Validation
+
         const { data, error } = await supabase.from('library').select('*').eq('academy_id', academyId);
-        if (error) throw error;
+        if (error) {
+            console.warn("Library fetch error:", error);
+            return [];
+        }
         return (data || []).map((l: any) => ({
             id: l.id,
             academyId: l.academy_id,
@@ -623,7 +677,6 @@ export const PulseService = {
         if (error) throw error;
     },
 
-    // Missing helper for Context
     // Missing helper for Context
     saveStudents: async (students: Student[]) => {
         if (students.length === 0) return;
@@ -707,8 +760,13 @@ export const PulseService = {
     // --- MESSAGES ---
 
     getMessages: async (academyId: string): Promise<Message[]> => {
+        if (!academyId) return []; // Validation
+
         const { data, error } = await supabase.from('messages').select('*').eq('academy_id', academyId).order('date', { ascending: false });
-        if (error) throw error;
+        if (error) {
+            console.warn("Messages error:", error);
+            return [];
+        }
         return (data || []).map((m: any) => ({
             id: m.id,
             academyId: m.academy_id,

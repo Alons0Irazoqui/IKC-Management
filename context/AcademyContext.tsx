@@ -236,17 +236,19 @@ export const AcademyProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
                 const dbSettings = await PulseService.getAcademySettings(currentUser.academyId);
 
-                // SELF-REPAIR: Seed default ranks if missing
-                if (!dbSettings.ranks || dbSettings.ranks.length === 0) {
-                    console.log("No ranks found. Seeding defaults...");
-                    const seededRanks = await PulseService.seedDefaultRanks(currentUser.academyId);
-                    dbSettings.ranks = seededRanks as any;
-                }
+                if (dbSettings) {
+                    // SELF-REPAIR: Seed default ranks if missing
+                    if (!dbSettings.ranks || dbSettings.ranks.length === 0) {
+                        console.log("No ranks found. Seeding defaults...");
+                        const seededRanks = await PulseService.seedDefaultRanks(currentUser.academyId);
+                        dbSettings.ranks = seededRanks as any;
+                    }
 
-                setAcademySettings(prev => {
-                    if (JSON.stringify(prev) !== JSON.stringify(dbSettings)) return dbSettings;
-                    return prev;
-                });
+                    setAcademySettings(prev => {
+                        if (JSON.stringify(prev) !== JSON.stringify(dbSettings)) return dbSettings;
+                        return prev;
+                    });
+                }
 
                 const dbLibs = await PulseService.getLibrary(currentUser.academyId);
                 setLibraryResources(dbLibs);

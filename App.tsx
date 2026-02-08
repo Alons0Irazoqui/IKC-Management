@@ -67,6 +67,9 @@ const App: React.FC = () => {
                                         {/* Ruta de Términos y Condiciones (Pública) */}
                                         <Route path="/terms" element={<TermsAndConditions />} />
 
+                                        {/* Catch-all for public routes (fixes white screen on auth redirects) */}
+                                        <Route path="*" element={<Navigate to="/login" replace />} />
+
                                         <Route path="/403" element={<Forbidden />} />
 
                                         {/* --- RUTAS PROTEGIDAS MAESTRO --- */}

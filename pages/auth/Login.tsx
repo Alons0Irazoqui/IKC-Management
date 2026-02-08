@@ -22,18 +22,45 @@ const Login: React.FC = () => {
         e.preventDefault();
         setLoading(true);
 
+        // Safety timeout to prevent infinite loops (15 seconds)
+        const timeoutPromise = new Promise<boolean>((_, reject) =>
+            setTimeout(() => reject(new Error('Tiempo de espera agotado. Por favor recarga la página.')), 15000)
+        );
+
         try {
-            const success = await login(formData.email, formData.password);
+            // Race between login and timeout
+            const success = await Promise.race([
+                login(formData.email, formData.password),
+                timeoutPromise
+            ]);
+
             if (success) {
-                // Navigation handled by useEffect above primarily, 
-                // but login returns true only after auth state is set?
-                // AuthContext login calls addToast but doesn't return user role directly.
-                // The useEffect will catch the state change.
+                // FORCE NAVIGATION mostly for safety, though useEffect should handle it too
+                // We check what we have in context or just rely on the race result
+                // But since we just awaited login which awaits fetchUserProfile, accessing currentUser here *might* be stale due to closure,
+                // but AuthContext state update should trigger re-render and useEffect.
+                // However, let's force a short delay or just let useEffect take over.
+                // WE MUST set loading to false here? No, if we navigate, component unmounts.
+                // But if useEffect is slow, we want to stop spinning?
+                // Actually, if we stop spinning, the user might click again.
+                // Better to keep spinning UNTIL navigation happens?
+                // But the user says "infinite loop".
+                // So let's stop spinning.
             }
+        } catch (error) {
+            console.error("Login timeout or error:", error);
+            // Optionally add toast handled by context
         } finally {
-            setLoading(false);
+            // ALWAYS turn off loading.
+            if (mountedRef.current) setLoading(false);
         }
     };
+
+    // Add mounted ref
+    const mountedRef = React.useRef(true);
+    React.useEffect(() => {
+        return () => { mountedRef.current = false; };
+    }, []);
 
     return (
         <div className="min-h-screen w-full flex flex-col items-center justify-center bg-white font-sans text-slate-900 p-6 selection:bg-red-100 selection:text-red-900">
